@@ -1,415 +1,580 @@
+/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
+ *
+ * AM335x MCASP to ADSP-21262 SPORT driver.
+ *
+ * Copyright (C) GeoTechnologies 2015
+ *
+ * Author: Vitja Makarov <vitja.makarov@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
+ */
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/pm_runtime.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/edma.h>
 #include <linux/of_platform.h>
+#include <linux/platform_data/davinci_asp.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/io.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+#include <linux/dma-mapping.h>
 
-
-/*
- * McASP register definitions
- */
-#define DAVINCI_MCASP_PID_REG		0x00
-#define DAVINCI_MCASP_PWREMUMGT_REG	0x04
-
-#define DAVINCI_MCASP_PFUNC_REG		0x10
-#define DAVINCI_MCASP_PDIR_REG		0x14
-#define DAVINCI_MCASP_PDOUT_REG		0x18
-#define DAVINCI_MCASP_PDSET_REG		0x1c
-
-#define DAVINCI_MCASP_PDCLR_REG		0x20
-
-#define DAVINCI_MCASP_TLGC_REG		0x30
-#define DAVINCI_MCASP_TLMR_REG		0x34
-
-#define DAVINCI_MCASP_GBLCTL_REG	0x44
-#define DAVINCI_MCASP_AMUTE_REG		0x48
-#define DAVINCI_MCASP_LBCTL_REG		0x4c
-
-#define DAVINCI_MCASP_TXDITCTL_REG	0x50
-
-#define DAVINCI_MCASP_GBLCTLR_REG	0x60
-#define DAVINCI_MCASP_RXMASK_REG	0x64
-#define DAVINCI_MCASP_RXFMT_REG		0x68
-#define DAVINCI_MCASP_RXFMCTL_REG	0x6c
-
-#define DAVINCI_MCASP_ACLKRCTL_REG	0x70
-#define DAVINCI_MCASP_AHCLKRCTL_REG	0x74
-#define DAVINCI_MCASP_RXTDM_REG		0x78
-#define DAVINCI_MCASP_EVTCTLR_REG	0x7c
-
-#define DAVINCI_MCASP_RXSTAT_REG	0x80
-#define DAVINCI_MCASP_RXTDMSLOT_REG	0x84
-#define DAVINCI_MCASP_RXCLKCHK_REG	0x88
-#define DAVINCI_MCASP_REVTCTL_REG	0x8c
-
-#define DAVINCI_MCASP_GBLCTLX_REG	0xa0
-#define DAVINCI_MCASP_TXMASK_REG	0xa4
-#define DAVINCI_MCASP_TXFMT_REG		0xa8
-#define DAVINCI_MCASP_TXFMCTL_REG	0xac
-
-#define DAVINCI_MCASP_ACLKXCTL_REG	0xb0
-#define DAVINCI_MCASP_AHCLKXCTL_REG	0xb4
-#define DAVINCI_MCASP_TXTDM_REG		0xb8
-#define DAVINCI_MCASP_EVTCTLX_REG	0xbc
-
-#define DAVINCI_MCASP_TXSTAT_REG	0xc0
-#define DAVINCI_MCASP_TXTDMSLOT_REG	0xc4
-#define DAVINCI_MCASP_TXCLKCHK_REG	0xc8
-#define DAVINCI_MCASP_XEVTCTL_REG	0xcc
-
-/* Left(even TDM Slot) Channel Status Register File */
-#define DAVINCI_MCASP_DITCSRA_REG	0x100
-/* Right(odd TDM slot) Channel Status Register File */
-#define DAVINCI_MCASP_DITCSRB_REG	0x118
-/* Left(even TDM slot) User Data Register File */
-#define DAVINCI_MCASP_DITUDRA_REG	0x130
-/* Right(odd TDM Slot) User Data Register File */
-#define DAVINCI_MCASP_DITUDRB_REG	0x148
-
-/* Serializer n Control Register */
-#define DAVINCI_MCASP_XRSRCTL_BASE_REG	0x180
-#define DAVINCI_MCASP_XRSRCTL_REG(n)	(DAVINCI_MCASP_XRSRCTL_BASE_REG + \
-				 		(n << 2))
-
-/* Transmit Buffer for Serializer n */
-#define DAVINCI_MCASP_TXBUF_REG		0x200
-/* Receive Buffer for Serializer n */
-#define DAVINCI_MCASP_RXBUF_REG		0x280
-
-/* McASP FIFO Registers */
-#define DAVINCI_MCASP_WFIFOCTL		(0x1010)
-#define DAVINCI_MCASP_WFIFOSTS		(0x1014)
-#define DAVINCI_MCASP_RFIFOCTL		(0x1018)
-#define DAVINCI_MCASP_RFIFOSTS		(0x101C)
-#define MCASP_VER3_WFIFOCTL		(0x1000)
-#define MCASP_VER3_WFIFOSTS		(0x1004)
-#define MCASP_VER3_RFIFOCTL		(0x1008)
-#define MCASP_VER3_RFIFOSTS		(0x100C)
-
-/*
- * DAVINCI_MCASP_PWREMUMGT_REG - Power Down and Emulation Management
- *     Register Bits
- */
-#define MCASP_FREE	BIT(0)
-#define MCASP_SOFT	BIT(1)
-
-/*
- * DAVINCI_MCASP_PFUNC_REG - Pin Function / GPIO Enable Register Bits
- */
-#define AXR(n)		(1<<n)
-#define PFUNC_AMUTE	BIT(25)
-#define ACLKX		BIT(26)
-#define AHCLKX		BIT(27)
-#define AFSX		BIT(28)
-#define ACLKR		BIT(29)
-#define AHCLKR		BIT(30)
-#define AFSR		BIT(31)
-
-/*
- * DAVINCI_MCASP_PDIR_REG - Pin Direction Register Bits
- */
-#define AXR(n)		(1<<n)
-#define PDIR_AMUTE	BIT(25)
-#define ACLKX		BIT(26)
-#define AHCLKX		BIT(27)
-#define AFSX		BIT(28)
-#define ACLKR		BIT(29)
-#define AHCLKR		BIT(30)
-#define AFSR		BIT(31)
-
-/*
- * DAVINCI_MCASP_TXDITCTL_REG - Transmit DIT Control Register Bits
- */
-#define DITEN	BIT(0)	/* Transmit DIT mode enable/disable */
-#define VA	BIT(2)
-#define VB	BIT(3)
-
-/*
- * DAVINCI_MCASP_TXFMT_REG - Transmit Bitstream Format Register Bits
- */
-#define TXROT(val)	(val)
-#define TXSEL		BIT(3)
-#define TXSSZ(val)	(val<<4)
-#define TXPBIT(val)	(val<<8)
-#define TXPAD(val)	(val<<13)
-#define TXORD		BIT(15)
-#define FSXDLY(val)	(val<<16)
-
-/*
- * DAVINCI_MCASP_RXFMT_REG - Receive Bitstream Format Register Bits
- */
-#define RXROT(val)	(val)
-#define RXSEL		BIT(3)
-#define RXSSZ(val)	(val<<4)
-#define RXPBIT(val)	(val<<8)
-#define RXPAD(val)	(val<<13)
-#define RXORD		BIT(15)
-#define FSRDLY(val)	(val<<16)
-
-/*
- * DAVINCI_MCASP_TXFMCTL_REG -  Transmit Frame Control Register Bits
- */
-#define FSXPOL		BIT(0)
-#define AFSXE		BIT(1)
-#define FSXDUR		BIT(4)
-#define FSXMOD(val)	(val<<7)
-
-/*
- * DAVINCI_MCASP_RXFMCTL_REG - Receive Frame Control Register Bits
- */
-#define FSRPOL		BIT(0)
-#define AFSRE		BIT(1)
-#define FSRDUR		BIT(4)
-#define FSRMOD(val)	(val<<7)
-
-/*
- * DAVINCI_MCASP_ACLKXCTL_REG - Transmit Clock Control Register Bits
- */
-#define ACLKXDIV(val)	(val)
-#define ACLKXE		BIT(5)
-#define TX_ASYNC	BIT(6)
-#define ACLKXPOL	BIT(7)
-#define ACLKXDIV_MASK	0x1f
-
-/*
- * DAVINCI_MCASP_ACLKRCTL_REG Receive Clock Control Register Bits
- */
-#define ACLKRDIV(val)	(val)
-#define ACLKRE		BIT(5)
-#define RX_ASYNC	BIT(6)
-#define ACLKRPOL	BIT(7)
-#define ACLKRDIV_MASK	0x1f
-
-/*
- * DAVINCI_MCASP_AHCLKXCTL_REG - High Frequency Transmit Clock Control
- *     Register Bits
- */
-#define AHCLKXDIV(val)	(val)
-#define AHCLKXPOL	BIT(14)
-#define AHCLKXE		BIT(15)
-#define AHCLKXDIV_MASK	0xfff
-
-/*
- * DAVINCI_MCASP_AHCLKRCTL_REG - High Frequency Receive Clock Control
- *     Register Bits
- */
-#define AHCLKRDIV(val)	(val)
-#define AHCLKRPOL	BIT(14)
-#define AHCLKRE		BIT(15)
-#define AHCLKRDIV_MASK	0xfff
-
-/*
- * DAVINCI_MCASP_XRSRCTL_BASE_REG -  Serializer Control Register Bits
- */
-#define MODE(val)	(val)
-#define DISMOD		(val)(val<<2)
-#define TXSTATE		BIT(4)
-#define RXSTATE		BIT(5)
-
-/*
- * DAVINCI_MCASP_LBCTL_REG - Loop Back Control Register Bits
- */
-#define LBEN		BIT(0)
-#define LBORD		BIT(1)
-#define LBGENMODE(val)	(val<<2)
-
-/*
- * DAVINCI_MCASP_TXTDMSLOT_REG - Transmit TDM Slot Register configuration
- */
-#define TXTDMS(n)	(1<<n)
-
-/*
- * DAVINCI_MCASP_RXTDMSLOT_REG - Receive TDM Slot Register configuration
- */
-#define RXTDMS(n)	(1<<n)
-
-/*
- * DAVINCI_MCASP_GBLCTL_REG -  Global Control Register Bits
- */
-#define RXCLKRST	BIT(0)	/* Receiver Clock Divider Reset */
-#define RXHCLKRST	BIT(1)	/* Receiver High Frequency Clock Divider */
-#define RXSERCLR	BIT(2)	/* Receiver Serializer Clear */
-#define RXSMRST		BIT(3)	/* Receiver State Machine Reset */
-#define RXFSRST		BIT(4)	/* Frame Sync Generator Reset */
-#define TXCLKRST	BIT(8)	/* Transmitter Clock Divider Reset */
-#define TXHCLKRST	BIT(9)	/* Transmitter High Frequency Clock Divider*/
-#define TXSERCLR	BIT(10)	/* Transmit Serializer Clear */
-#define TXSMRST		BIT(11)	/* Transmitter State Machine Reset */
-#define TXFSRST		BIT(12)	/* Frame Sync Generator Reset */
-
-/*
- * DAVINCI_MCASP_AMUTE_REG -  Mute Control Register Bits
- */
-#define MUTENA(val)	(val)
-#define MUTEINPOL	BIT(2)
-#define MUTEINENA	BIT(3)
-#define MUTEIN		BIT(4)
-#define MUTER		BIT(5)
-#define MUTEX		BIT(6)
-#define MUTEFSR		BIT(7)
-#define MUTEFSX		BIT(8)
-#define MUTEBADCLKR	BIT(9)
-#define MUTEBADCLKX	BIT(10)
-#define MUTERXDMAERR	BIT(11)
-#define MUTETXDMAERR	BIT(12)
-
-/*
- * DAVINCI_MCASP_REVTCTL_REG - Receiver DMA Event Control Register bits
- */
-#define RXDATADMADIS	BIT(0)
-
-/*
- * DAVINCI_MCASP_XEVTCTL_REG - Transmitter DMA Event Control Register bits
- */
-#define TXDATADMADIS	BIT(0)
-
-/*
- * DAVINCI_MCASP_W[R]FIFOCTL - Write/Read FIFO Control Register bits
- */
-#define FIFO_ENABLE	BIT(16)
-#define NUMEVT_MASK	(0xFF << 8)
-#define NUMDMA_MASK	(0xFF)
-
-#define DAVINCI_MCASP_NUM_SERIALIZER	16
-
-
-static inline void mcasp_set_bits(void __iomem *reg, u32 val)
-{
-	__raw_writel(__raw_readl(reg) | val, reg);
-}
-
-static inline void mcasp_clr_bits(void __iomem *reg, u32 val)
-{
-	__raw_writel((__raw_readl(reg) & ~(val)), reg);
-}
-
-static inline void mcasp_mod_bits(void __iomem *reg, u32 val, u32 mask)
-{
-	__raw_writel((__raw_readl(reg) & ~mask) | val, reg);
-}
-
-static inline void mcasp_set_reg(void __iomem *reg, u32 val)
-{
-	__raw_writel(val, reg);
-}
-
-static inline u32 mcasp_get_reg(void __iomem *reg)
-{
-	return (unsigned int)__raw_readl(reg);
-}
-
-static inline void mcasp_set_ctl_reg(void __iomem *regs, u32 val)
-{
-	int i = 0;
-
-	mcasp_set_bits(regs, val);
-
-	/* programming GBLCTL needs to read back from GBLCTL and verfiy */
-	/* loop count is to avoid the lock-up */
-	for (i = 0; i < 1000; i++) {
-		if ((mcasp_get_reg(regs) & val) == val)
-			break;
-	}
-
-	if (i == 1000 && ((mcasp_get_reg(regs) & val) != val))
-		printk(KERN_ERR "GBLCTL write error\n");
-}
+#include "davinci-mcasp.h"
 
 
 struct gtsport_dev {
 	void __iomem *base;
-	struct device *dev;
+	void __iomem *fifo;
+	u32 fifo_base;
+
+	int rx_dma_channel;
+	u32 rx_dma_offset;
+	u32 tx_dma_offset;
+	u32 asp_chan_q;
+	u32 ram_chan_q;
+} ;
+
+
+static inline void mcasp_set_bits(struct gtsport_dev *mcasp, u32 offset,
+				  u32 val)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel(__raw_readl(reg) | val, reg);
+}
+
+static inline void mcasp_clr_bits(struct gtsport_dev *mcasp, u32 offset,
+				  u32 val)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel((__raw_readl(reg) & ~(val)), reg);
+}
+
+static inline void mcasp_mod_bits(struct gtsport_dev *mcasp, u32 offset,
+				  u32 val, u32 mask)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel((__raw_readl(reg) & ~mask) | val, reg);
+}
+
+static inline void mcasp_set_reg(struct gtsport_dev *mcasp, u32 offset,
+				 u32 val)
+{
+	__raw_writel(val, mcasp->base + offset);
+}
+
+static inline u32 mcasp_get_reg(struct gtsport_dev *mcasp, u32 offset)
+{
+	return (u32)__raw_readl(mcasp->base + offset);
+}
+
+static void mcasp_set_ctl_reg(struct gtsport_dev *mcasp, u32 ctl_reg, u32 val)
+{
+	int i = 0;
+
+	mcasp_set_bits(mcasp, ctl_reg, val);
+
+	/* programming GBLCTL needs to read back from GBLCTL and verfiy */
+	/* loop count is to avoid the lock-up */
+	for (i = 0; i < 1000; i++) {
+		if ((mcasp_get_reg(mcasp, ctl_reg) & val) == val)
+			break;
+	}
+
+	if (i == 1000 && ((mcasp_get_reg(mcasp, ctl_reg) & val) != val))
+		printk(KERN_ERR "GBLCTL write error\n");
+}
+
+static bool mcasp_is_synchronous(struct gtsport_dev *mcasp)
+{
+	u32 rxfmctl = mcasp_get_reg(mcasp, DAVINCI_MCASP_RXFMCTL_REG);
+	u32 aclkxctl = mcasp_get_reg(mcasp, DAVINCI_MCASP_ACLKXCTL_REG);
+
+	return !(aclkxctl & TX_ASYNC) && rxfmctl & AFSRE;
+}
+
+static void mcasp_start_rx(struct gtsport_dev *mcasp)
+{
+	printk("%s()\n", __func__);
+#if 0
+	if (1) {	/* enable FIFO */
+		u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
+
+		//mcasp_set_reg(mcasp, reg, 0);
+		//mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
+		//mcasp_set_bits(mcasp, reg, FIFO_ENABLE);
+	}
+#endif
+	/* Start clocks */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXHCLKRST);
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXCLKRST);
+	/*
+	 * When ASYNC == 0 the transmit and receive sections operate
+	 * synchronously from the transmit clock and frame sync. We need to make
+	 * sure that the TX signlas are enabled when starting reception.
+	 */
+	if (mcasp_is_synchronous(mcasp)) {
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXHCLKRST);
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXCLKRST);
+	}
+
+	/* Activate serializer(s) */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXSERCLR);
+	/* Release RX state machine */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXSMRST);
+	/* Release Frame Sync generator */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXFSRST);
+	if (mcasp_is_synchronous(mcasp))
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXFSRST);
+
+	/* enable receive IRQs */
+	//mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, RECIEVE_IRQ_MASK);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
+}
+
+static void mcasp_stop_rx(struct gtsport_dev *mcasp)
+{
+	printk("%s()\n", __func__);
+
+	/* disable IRQ sources */
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
+
+	/*
+	 * In synchronous mode stop the TX clocks if no other stream is
+	 * running
+	 */
+	if (mcasp_is_synchronous(mcasp))
+		mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, 0);
+
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, 0);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
 
 #if 0
-	/* McASP specific data */
-	int	tdm_slots;
-	u8	op_mode;
-	u8	num_serializer;
-	u8	*serial_dir;
-	u8	version;
-	u8	bclk_lrclk_ratio;
-
-	/* McASP FIFO related */
-	u8	txnumevt;
-	u8	rxnumevt;
+	if (1) {	/* disable FIFO */
+		u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
+		mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
+	}
 #endif
-};
+}
 
-#define TX_MODE 1
-
-static
-void set_hw_params(struct gtsport_dev *dev)
+static void pintest(struct gtsport_dev *mcasp)
 {
+	unsigned long stats[32];
+	unsigned long i;
+
+	memset(stats, 0, sizeof(stats));
+
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_PFUNC_REG, 0xffffffff);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_PDIR_REG,  0x00000000);
+
+	for (i = 0; i < 100000; i++) {
+		unsigned long bits = mcasp_get_reg(mcasp, DAVINCI_MCASP_PDSET_REG);
+		int bit;
+
+		for (bit = 0; bit < 32; bit++) {
+			if (bits & (1 << bit))
+				stats[bit]++;
+		}
+		//udelay(1);
+		//udelay(10);
+	}
+
+	for (i = 0; i < 32; i++) {
+		printk("... bit%02d: %d\n", i, stats[i]);
+	}
+}
+
+
+#define RX_DMA_OFFSET 0x46000000
+
+
+static void dump_regs(void)
+{
+	struct gtsport_dev mcasp = {
+		.base = 0xfa038000,
+	};
+	struct reg_dump {
+		const char *name;
+		u32 offset;
+	};
+
+#define _R(n) {#n, n}
+
+	struct reg_dump regs[] = {
+		_R(DAVINCI_MCASP_ACLKRCTL_REG),
+		_R(DAVINCI_MCASP_ACLKXCTL_REG),
+		_R(DAVINCI_MCASP_AHCLKRCTL_REG),
+		_R(DAVINCI_MCASP_AHCLKXCTL_REG),
+		_R(DAVINCI_MCASP_GBLCTLR_REG),
+		_R(DAVINCI_MCASP_GBLCTLX_REG),
+		_R(DAVINCI_MCASP_PDIR_REG),
+		_R(DAVINCI_MCASP_PFUNC_REG),
+		_R(DAVINCI_MCASP_PWREMUMGT_REG),
+		_R(DAVINCI_MCASP_REVTCTL_REG),
+		_R(DAVINCI_MCASP_V3_AFIFO_BASE + MCASP_RFIFOCTL_OFFSET),
+		_R(DAVINCI_MCASP_V3_AFIFO_BASE + MCASP_RFIFOSTS_OFFSET),
+		_R(DAVINCI_MCASP_RXBUF_REG),
+		_R(DAVINCI_MCASP_RXFMCTL_REG),
+		_R(DAVINCI_MCASP_RXFMT_REG),
+		_R(DAVINCI_MCASP_RXMASK_REG),
+		_R(DAVINCI_MCASP_RXSTAT_REG),
+		_R(DAVINCI_MCASP_RXTDM_REG),
+		_R(DAVINCI_MCASP_TXBUF_REG),
+		_R(DAVINCI_MCASP_TXDITCTL_REG),
+		_R(DAVINCI_MCASP_TXFMCTL_REG),
+		_R(DAVINCI_MCASP_TXFMT_REG),
+		_R(DAVINCI_MCASP_TXMASK_REG),
+		_R(DAVINCI_MCASP_TXSTAT_REG),
+		_R(DAVINCI_MCASP_TXTDM_REG),
+		_R(DAVINCI_MCASP_XEVTCTL_REG),
+		_R(DAVINCI_MCASP_XRSRCTL_REG(0)),
+		_R(DAVINCI_MCASP_RXBUF_REG),
+		{NULL},
+	} ;
+
+
+	int i;
+
+	for (i = 0; regs[i].name; i++) {
+		u32 reg = mcasp_get_reg(&mcasp, regs[i].offset);
+		printk("%s (%04x): %08x\n", regs[i].name, regs[i].offset, reg);
+	}
+
+
+}
+
+void mcasp_set_hw_params(struct gtsport_dev *mcasp)
+{
+	int i;
+	u8 tx_ser = 0;
+	u8 rx_ser = 0;
+	int max_active_serializers = 1;
+
+	const int serial_dir[16] = {
+		RX_MODE, 0, TX_MODE, 0,
+		0, 0, 0, 0,
+		0, 0, 0, 0,
+		0, 0, 0, 0};
+	const int num_serializer = 16;
+
+
+	u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
+
+
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, 0);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, 0);
+
+	mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
+
+#if 1
+	mcasp_mod_bits(mcasp, reg, 1, NUMDMA_MASK);
+	mcasp_mod_bits(mcasp, reg, NUMEVT(1), NUMEVT_MASK);
+	mcasp_set_bits(mcasp, reg, FIFO_ENABLE);
+#endif
+
+
 	/* Default configuration */
-	mcasp_set_bits(dev->base + DAVINCI_MCASP_PWREMUMGT_REG, MCASP_SOFT);
+	//if (mcasp->version < MCASP_VERSION_3)
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_PWREMUMGT_REG, MCASP_SOFT);
 
 	/* All PINS as McASP */
-	mcasp_set_reg(dev->base + DAVINCI_MCASP_PFUNC_REG, 0x00000000);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_PFUNC_REG, 0x00000000);
 
-        mcasp_set_reg(dev->base + DAVINCI_MCASP_TXSTAT_REG, 0xFFFFFFFF);
-        mcasp_clr_bits(dev->base + DAVINCI_MCASP_XEVTCTL_REG,
-                       TXDATADMADIS);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_REVTCTL_REG, RXDATADMADIS);
 
-        mcasp_set_bits(dev->base + DAVINCI_MCASP_XRSRCTL_REG(0), TX_MODE);
-        mcasp_set_bits(dev->base + DAVINCI_MCASP_PDIR_REG, AXR(0));
 
-        int tx_ser = 0, txnumevt = 1;
+	for (i = 0; i < num_serializer; i++) {
+		mcasp_set_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
+			       serial_dir[i]);
+		if (serial_dir[i] == TX_MODE &&
+		    tx_ser < max_active_serializers) {
+			mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
+			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
+				       DISMOD_LOW, DISMOD_MASK);
+			tx_ser++;
+		} else if (serial_dir[i] == RX_MODE &&
+			   rx_ser < max_active_serializers) {
+			mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AXR(i));
+			rx_ser++;
+		} else {
+			mcasp_mod_bits(mcasp, DAVINCI_MCASP_XRSRCTL_REG(i),
+				       SRMOD_INACTIVE, SRMOD_MASK);
+		}
+	}
 
-        mcasp_mod_bits(dev->base + DAVINCI_MCASP_WFIFOCTL,
-                       tx_ser,	NUMDMA_MASK);
-        mcasp_mod_bits(dev->base + DAVINCI_MCASP_WFIFOCTL,
-                       ((txnumevt * tx_ser) << 8), NUMEVT_MASK);
+#if 0
+	int active_serializers = rx_ser;
+	int numevt = 1;
+	u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
+
+	mcasp_mod_bits(mcasp, reg,
+		       active_serializers,
+		       NUMDMA_MASK);
+	mcasp_mod_bits(mcasp, reg,
+		       NUMEVT(numevt),
+		       NUMEVT_MASK);
+#endif
 }
 
 
 static
-void start_test_tx(struct gtsport_dev *dev)
+void mcasp_set_dai_fmt(struct gtsport_dev *mcasp)
 {
-        int cnt = 0;
+	int ret = 0;
+	u32 data_delay;
+	bool fs_pol_rising;
+	bool inv_fs = false;
 
-        set_hw_params(dev);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG, FSXDUR);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG, FSRDUR);
+	/* 1st data bit occur one ACLK cycle after the frame sync */
+	data_delay = 0;
 
-        mcasp_clr_bits(dev->base + DAVINCI_MCASP_WFIFOCTL, FIFO_ENABLE);
-        mcasp_set_bits(dev->base + DAVINCI_MCASP_WFIFOCTL, FIFO_ENABLE);
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_TXFMT_REG, FSXDLY(data_delay),
+		       FSXDLY(3));
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, FSRDLY(data_delay),
+		       FSRDLY(3));
 
-	u32 pdir = mcasp_get_reg(dev->base + DAVINCI_MCASP_PDIR_REG);
-	u32 rhclk_reg = mcasp_get_reg(dev->base + DAVINCI_MCASP_AHCLKRCTL_REG);
-	u32 rclk_reg = mcasp_get_reg(dev->base + DAVINCI_MCASP_ACLKRCTL_REG);
+	/* codec is clock and frame master */
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_ACLKXCTL_REG, ACLKXE);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG, AFSXE);
+
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_ACLKRCTL_REG, ACLKRE);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG, AFSRE);
+
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDIR_REG,
+		       ACLKX | AHCLKX | AFSX | ACLKR | AHCLKR | AFSR);
+
+#if 0
+	//???
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_AHCLKXCTL_REG, AHCLKXE);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_AHCLKRCTL_REG, AHCLKRE);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AHCLKX);
+#endif
+
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AHCLKX);
 
 
-	if((pdir & ACLKR) && (rclk_reg & ACLKRE)) {
-		mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLR_REG, RXCLKRST);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_ACLKXCTL_REG, ACLKXPOL);
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_ACLKRCTL_REG, ACLKRPOL);//???
+	fs_pol_rising = false;
+
+	if (inv_fs)
+		fs_pol_rising = !fs_pol_rising;
+
+	if (fs_pol_rising) {
+		mcasp_clr_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG, FSXPOL);
+		mcasp_clr_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG, FSRPOL);
+	} else {
+		mcasp_set_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG, FSXPOL);
+		mcasp_set_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG, FSRPOL);
+	}
+}
+
+
+static
+void mcasp_i2s_hw_param(struct gtsport_dev *mcasp)
+{
+	// 32 bits
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXFMCTL_REG, 0x00000100);
+	// channel 1
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, 3);
+
+#if 0
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, mask);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, busel | RXORD);
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG,
+		       FSRMOD(total_slots), FSRMOD(0x1FF));
+#endif
+}
+
+static
+void set_channel_size(struct gtsport_dev *mcasp)
+{
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXMASK_REG, 0xffffffff);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXFMT_REG, 0x000080f0);
+
+#if 0
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, RXSSZ(fmt),
+		       RXSSZ(0x0F));
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, RXROT(rx_rotate),
+		       RXROT(7));
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXMASK_REG, mask);
+#endif
+}
+
+
+static void dma_callback(unsigned link, u16 ch_status, void *data)
+{
+	printk("%s\n", __func__);
+
+	if (unlikely(ch_status != DMA_COMPLETE))
+		return;
+}
+
+static
+void start_test_tx(struct gtsport_dev *dev, struct platform_device *pdev)
+{
+	pintest(dev);
+
+	mcasp_set_hw_params(dev);
+	mcasp_i2s_hw_param(dev);
+	set_channel_size(dev);
+	mcasp_set_dai_fmt(dev);
+
+#if 1
+	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKRCTL_REG,0);
+	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKXCTL_REG, 0);
+	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKRCTL_REG, 0x00008001);
+	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKXCTL_REG, 0x00008001);
+	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLR_REG, 0x0000021f);
+	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLX_REG, 0x0000021f);
+
+	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMCTL_REG, 0x00000100);
+	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMT_REG, 0x000080f0);
+
+	mcasp_set_reg(dev, DAVINCI_MCASP_XRSRCTL_REG(0), 0x22);
+#endif
+
+	{
+		edma_alloc_channel(dev->rx_dma_channel,
+				   dma_callback, dev,
+				   dev->asp_chan_q);
+		edma_stop(dev->rx_dma_channel);
 	}
 
-	if((pdir & AHCLKR) && (rhclk_reg & AHCLKRE)) {
-		mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLR_REG, RXHCLKRST);
+
+
+#if 0
+	u8 *dma_buf = NULL;
+	dma_addr_t dmaphysbuf = 0;
+
+	{
+		int ret;
+
+		ret = edma_alloc_channel(dev->rx_dma_channel,
+					 dma_callback, dev,
+					 dev->asp_chan_q);
+		if (ret < 0) {
+			printk("edma_alloc_channel() failed\n");
+			return;
+		}
+
+		dma_buf = (unsigned char *) dma_alloc_coherent(
+							       NULL, 1024, &dmaphysbuf, 0);
+
+		printk("got buffer: %08x\n", dma_buf);
+
+
+		edma_set_src(dev->rx_dma_channel, dev->rx_dma_offset, FIFO, W32BIT);
+		edma_set_dest(dev->rx_dma_channel, dmaphysbuf, INCR, W32BIT);
+
+		edma_set_src_index(dev->rx_dma_channel, 0, 0);
+		edma_set_dest_index(dev->rx_dma_channel, 0, 0);
+
+		edma_set_transfer_params(dev->rx_dma_channel, 1024, 1, 1024, 1, ASYNC); //one block of one frame of one array of count bytes
+
+
+		struct edmacc_param param_set;
+
+		/* Enable the Interrupts on Channel 1 */
+		edma_read_slot(dev->rx_dma_channel, &param_set);
+		param_set.opt |= ITCINTEN;
+		param_set.opt |= TCINTEN;
+		param_set.opt |= EDMA_TCC(EDMA_CHAN_SLOT(dev->rx_dma_channel));
+		edma_write_slot(dev->rx_dma_channel, &param_set);
+
+
+		edma_start(dev->rx_dma_channel);
+	}
+#endif
+
+	mcasp_start_rx(dev);
+
+
+	int i = 0;
+
+	for (i = 0; i < 10; i++) {
+		u32 stat = mcasp_get_reg(dev, DAVINCI_MCASP_RXSTAT_REG);
+
+		u32 s0 = mcasp_get_reg(dev, DAVINCI_MCASP_XRSRCTL_REG(0));
+		u32 data = mcasp_get_reg(dev, DAVINCI_MCASP_RXBUF_REG);
+
+
+		printk("%s(): stat = %08x, stat[0] = %08x, data = %08x\n",
+		       __func__, stat, s0, data);
+
+		//mcasp_clr_bits(dev, DAVINCI_MCASP_RXSTAT_REG, 0xf);
+
+		mdelay(10);
 	}
 
-	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXHCLKRST);
-	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXCLKRST);
-	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXSERCLR);
-	mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0);
 
-	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXSMRST);
-	mcasp_set_ctl_reg(dev->base + DAVINCI_MCASP_GBLCTLX_REG, TXFSRST);
-	mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0);
 
-	/* wait for TX ready */
-	cnt = 0;
-	while (!(mcasp_get_reg(dev->base + DAVINCI_MCASP_XRSRCTL_REG(0)) &
-		 TXSTATE) && (cnt < 100000))
-		cnt++;
 
-	mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0);
+	mdelay(100);
 
-        for (cnt = 0; cnt < 100; cnt++) {
-                mcasp_set_reg(dev->base + DAVINCI_MCASP_TXBUF_REG, 0x5555aaaa);
-                u32 r = mcasp_get_reg(dev->base + DAVINCI_MCASP_WFIFOSTS);
-                printk("fifost: %08x\n", r);
-        }
+	{
+		int i;
+		u32 s0, data;
+
+#define _N 10
+		u32 buf[_N];
+
+		do {
+			s0 = mcasp_get_reg(
+					   dev, DAVINCI_MCASP_XRSRCTL_REG(0));
+			data = __raw_readl(dev->fifo);
+		} while (s0 & BIT(5));
+
+		for (i = 0; i < 10; i++) {
+			u32 stat = mcasp_get_reg(dev, DAVINCI_MCASP_RXSTAT_REG);
+			s0 = mcasp_get_reg(
+					   dev, DAVINCI_MCASP_XRSRCTL_REG(0));
+
+			mcasp_set_bits(dev, DAVINCI_MCASP_RXSTAT_REG, 0x7);
+
+
+			printk("WORD = %08x, stat = %08x, s0 = %08x\n",
+			       __raw_readl(dev->fifo), stat, s0);
+		}
+
+
+		for (i = 0; i < _N; i++) {
+			do {
+				s0 = mcasp_get_reg(
+						   dev, DAVINCI_MCASP_XRSRCTL_REG(0));
+			} while (0 == (s0 & BIT(5)));
+
+			buf[i] = __raw_readl(dev->fifo);
+		}
+
+		for (i = 0; i < _N; i++) {
+			printk("WORD = %08x\n", buf[i]);
+		}
+	}
+
+	dump_regs();
+
+#if 0
+	edma_free_channel(dev->rx_dma_channel);
+	dma_free_coherent(NULL, 1024, dma_buf, dmaphysbuf);
+#endif
 }
 
 
@@ -432,7 +597,7 @@ static int gtsport_probe(struct platform_device *pdev)
 	struct resource *mem, *ioarea, *res;
 	struct gtsport_dev *dev;
 	struct pinctrl *pinctrl;
-        int ret;
+	int ret;
 
 	if (!pdev->dev.platform_data && !pdev->dev.of_node) {
 		dev_err(&pdev->dev, "No platform data supplied\n");
@@ -444,14 +609,39 @@ static int gtsport_probe(struct platform_device *pdev)
 	if (!dev)
 		return	-ENOMEM;
 
+
+	ret = of_property_read_u32(np, "asp-chan-q", &dev->asp_chan_q);
+	if (ret < 0) {
+		return -EINVAL;
+	}
+
+	ret = of_property_read_u32(np, "ram-chan-q", &dev->ram_chan_q);
+	if (ret >= 0) {
+		return -EINVAL;
+	}
+
+	ret = of_property_read_u32(np, "tx-dma-offset",	&dev->tx_dma_offset);
+	if (ret < 0) {
+		return -EINVAL;
+	}
+
+	ret = of_property_read_u32(np, "rx-dma-offset",	&dev->rx_dma_offset);
+	if (ret < 0) {
+		return -EINVAL;
+	}
+
+	printk("rx_dma_offset: %08x\n", dev->rx_dma_offset);
+
+
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
 	if (!mem) {
 		dev_err(&pdev->dev, "no mem resource?\n");
 		return -ENODEV;
 	}
 
 	ioarea = devm_request_mem_region(&pdev->dev, mem->start,
-			resource_size(mem), pdev->name);
+					 resource_size(mem), pdev->name);
 	if (!ioarea) {
 		dev_err(&pdev->dev, "Audio region already claimed\n");
 		return -EBUSY;
@@ -460,7 +650,7 @@ static int gtsport_probe(struct platform_device *pdev)
 	pinctrl = devm_pinctrl_get_select_default(&pdev->dev);
 	if (IS_ERR(pinctrl))
 		dev_warn(&pdev->dev,
-				"pins are not configured from the driver\n");
+			 "pins are not configured from the driver\n");
 
 	pm_runtime_enable(&pdev->dev);
 
@@ -470,33 +660,54 @@ static int gtsport_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	dev->base = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
+	dev->fifo_base = DAVINCI_MCASP_V3_AFIFO_BASE;
+	dev->base = devm_ioremap(
+				 &pdev->dev, mem->start, resource_size(mem));
 	if (!dev->base) {
 		dev_err(&pdev->dev, "ioremap failed\n");
 		ret = -ENOMEM;
 		goto err_release_clk;
 	}
 
-        printk("got base address %08x\n", dev->base);
+	dev->fifo = devm_ioremap(&pdev->dev, dev->rx_dma_offset, 0x2000);
+	if (!dev->fifo) {
+		dev_err(&pdev->dev, "ioremap failed\n");
+		ret = -ENOMEM;
+		goto err_release_clk;
+	}
 
 
-        start_test_tx(dev);
 
-        printk("%s\n", __func__);
-        return 0;
 
-err_release_clk:
+	res = platform_get_resource_byname(pdev, IORESOURCE_DMA, "rx");
+	if (!res) {
+		dev_err(&pdev->dev, "Failed to get rx dma resource\n");
+		ret = -ENODEV;
+		goto err_release_clk;
+	}
+	dev->rx_dma_channel = res->start;
+
+	printk("%s(): rx_dma_channel %d\n", __func__, dev->rx_dma_channel);
+
+
+	start_test_tx(dev, pdev);
+
+	printk("%s\n", __func__);
+	return 0;
+
+ err_release_clk:
 	pm_runtime_put_sync(&pdev->dev);
+ err:
 	pm_runtime_disable(&pdev->dev);
 	return ret;
 }
 
 static int gtsport_remove(struct platform_device *pdev)
 {
-        printk("%s\n", __func__);
+	printk("%s\n", __func__);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-        return 0;
+	return 0;
 }
 
 static struct platform_driver gtsport_driver = {
@@ -510,33 +721,16 @@ static struct platform_driver gtsport_driver = {
 };
 #endif
 
-#define PAD_CONFIG(off, value) __raw_writel(value, (void *) (0x44e10800 + off))
-#define MCASP_BASE 0x48038000
-
-
-static inline unsigned long mcasp_readl(unsigned long off)
-{
-        return __raw_readl((void *) MCASP_BASE + off);
-}
-
-static inline void mcasp_writel(unsigned long off, unsigned long value)
-{
-        __raw_writel(value, (void *) MCASP_BASE + off);
-}
-
 
 static int __init gtsport_start(void)
 {
-	printk(KERN_INFO "Loading hello module...\n");
-	printk(KERN_INFO "Hello world\n");
-
 #if defined(CONFIG_OF)
 	/*
 	 * If dtb is there, the devices will be created dynamically.
 	 * Only register platfrom driver structure.
 	 */
 	if (of_have_populated_dt())
-                return platform_driver_register(&gtsport_driver);
+		return platform_driver_register(&gtsport_driver);
 #endif
 
 	return 0;
@@ -550,12 +744,11 @@ static void __exit gtsport_end(void)
 		return;
 	}
 #endif
-	printk(KERN_INFO "Goodbye Mr.\n");
 }
 
 module_init(gtsport_start);
 module_exit(gtsport_end);
 
 MODULE_AUTHOR("Victor Makarov");
-MODULE_DESCRIPTION("GeoTechnologies SPORT driver");
+MODULE_DESCRIPTION("MCASP to SPORT driver");
 MODULE_LICENSE("GPL");
