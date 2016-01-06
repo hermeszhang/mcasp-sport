@@ -2,9 +2,9 @@
  *
  * AM335x MCASP to ADSP-21262 SPORT driver.
  *
- * Copyright (C) GeoTechnologies 2015
+ * Based on sound/soc/davinci/davinci-mcasp.c
  *
- * Author: Vitja Makarov <vitja.makarov@gmail.com>
+ * Copyright (C) GeoTechnologies 2016.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +13,7 @@
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	 See the
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
@@ -48,7 +48,6 @@ struct gtsport_dev {
 	u32 asp_chan_q;
 	u32 ram_chan_q;
 } ;
-
 
 static inline void mcasp_set_bits(struct gtsport_dev *mcasp, u32 offset,
 				  u32 val)
@@ -171,92 +170,6 @@ static void mcasp_stop_rx(struct gtsport_dev *mcasp)
 #endif
 }
 
-static void pintest(struct gtsport_dev *mcasp)
-{
-	unsigned long stats[32];
-	unsigned long i;
-
-	memset(stats, 0, sizeof(stats));
-
-	mcasp_set_reg(mcasp, DAVINCI_MCASP_PFUNC_REG, 0xffffffff);
-	mcasp_set_reg(mcasp, DAVINCI_MCASP_PDIR_REG,  0x00000000);
-
-	for (i = 0; i < 100000; i++) {
-		unsigned long bits = mcasp_get_reg(mcasp, DAVINCI_MCASP_PDSET_REG);
-		int bit;
-
-		for (bit = 0; bit < 32; bit++) {
-			if (bits & (1 << bit))
-				stats[bit]++;
-		}
-		//udelay(1);
-		//udelay(10);
-	}
-
-	for (i = 0; i < 32; i++) {
-		printk("... bit%02d: %d\n", i, stats[i]);
-	}
-}
-
-
-#define RX_DMA_OFFSET 0x46000000
-
-
-static void dump_regs(void)
-{
-	struct gtsport_dev mcasp = {
-		.base = 0xfa038000,
-	};
-	struct reg_dump {
-		const char *name;
-		u32 offset;
-	};
-
-#define _R(n) {#n, n}
-
-	struct reg_dump regs[] = {
-		_R(DAVINCI_MCASP_ACLKRCTL_REG),
-		_R(DAVINCI_MCASP_ACLKXCTL_REG),
-		_R(DAVINCI_MCASP_AHCLKRCTL_REG),
-		_R(DAVINCI_MCASP_AHCLKXCTL_REG),
-		_R(DAVINCI_MCASP_GBLCTLR_REG),
-		_R(DAVINCI_MCASP_GBLCTLX_REG),
-		_R(DAVINCI_MCASP_PDIR_REG),
-		_R(DAVINCI_MCASP_PFUNC_REG),
-		_R(DAVINCI_MCASP_PWREMUMGT_REG),
-		_R(DAVINCI_MCASP_REVTCTL_REG),
-		_R(DAVINCI_MCASP_V3_AFIFO_BASE + MCASP_RFIFOCTL_OFFSET),
-		_R(DAVINCI_MCASP_V3_AFIFO_BASE + MCASP_RFIFOSTS_OFFSET),
-		_R(DAVINCI_MCASP_RXBUF_REG),
-		_R(DAVINCI_MCASP_RXFMCTL_REG),
-		_R(DAVINCI_MCASP_RXFMT_REG),
-		_R(DAVINCI_MCASP_RXMASK_REG),
-		_R(DAVINCI_MCASP_RXSTAT_REG),
-		_R(DAVINCI_MCASP_RXTDM_REG),
-		_R(DAVINCI_MCASP_TXBUF_REG),
-		_R(DAVINCI_MCASP_TXDITCTL_REG),
-		_R(DAVINCI_MCASP_TXFMCTL_REG),
-		_R(DAVINCI_MCASP_TXFMT_REG),
-		_R(DAVINCI_MCASP_TXMASK_REG),
-		_R(DAVINCI_MCASP_TXSTAT_REG),
-		_R(DAVINCI_MCASP_TXTDM_REG),
-		_R(DAVINCI_MCASP_XEVTCTL_REG),
-		_R(DAVINCI_MCASP_XRSRCTL_REG(0)),
-		_R(DAVINCI_MCASP_RXBUF_REG),
-		{NULL},
-	} ;
-
-
-	int i;
-
-	for (i = 0; regs[i].name; i++) {
-		u32 reg = mcasp_get_reg(&mcasp, regs[i].offset);
-		printk("%s (%04x): %08x\n", regs[i].name, regs[i].offset, reg);
-	}
-
-
-}
-
 void mcasp_set_hw_params(struct gtsport_dev *mcasp)
 {
 	int i;
@@ -285,7 +198,6 @@ void mcasp_set_hw_params(struct gtsport_dev *mcasp)
 	mcasp_mod_bits(mcasp, reg, NUMEVT(1), NUMEVT_MASK);
 	mcasp_set_bits(mcasp, reg, FIFO_ENABLE);
 #endif
-
 
 	/* Default configuration */
 	//if (mcasp->version < MCASP_VERSION_3)
@@ -335,7 +247,6 @@ void mcasp_set_hw_params(struct gtsport_dev *mcasp)
 static
 void mcasp_set_dai_fmt(struct gtsport_dev *mcasp)
 {
-	int ret = 0;
 	u32 data_delay;
 	bool fs_pol_rising;
 	bool inv_fs = false;
@@ -428,9 +339,10 @@ static void dma_callback(unsigned link, u16 ch_status, void *data)
 }
 
 static
-void start_test_tx(struct gtsport_dev *dev, struct platform_device *pdev)
+void start_test_tx(struct platform_device *pdev)
 {
-	pintest(dev);
+	struct gtsport_dev *dev = platform_get_drvdata(pdev);
+	int i;
 
 	mcasp_set_hw_params(dev);
 	mcasp_i2s_hw_param(dev);
@@ -506,21 +418,14 @@ void start_test_tx(struct gtsport_dev *dev, struct platform_device *pdev)
 
 	mcasp_start_rx(dev);
 
-
-	int i = 0;
-
 	for (i = 0; i < 10; i++) {
 		u32 stat = mcasp_get_reg(dev, DAVINCI_MCASP_RXSTAT_REG);
-
 		u32 s0 = mcasp_get_reg(dev, DAVINCI_MCASP_XRSRCTL_REG(0));
 		u32 data = mcasp_get_reg(dev, DAVINCI_MCASP_RXBUF_REG);
 
-
 		printk("%s(): stat = %08x, stat[0] = %08x, data = %08x\n",
 		       __func__, stat, s0, data);
-
 		//mcasp_clr_bits(dev, DAVINCI_MCASP_RXSTAT_REG, 0xf);
-
 		mdelay(10);
 	}
 
@@ -569,14 +474,11 @@ void start_test_tx(struct gtsport_dev *dev, struct platform_device *pdev)
 		}
 	}
 
-	dump_regs();
-
 #if 0
 	edma_free_channel(dev->rx_dma_channel);
 	dma_free_coherent(NULL, 1024, dma_buf, dmaphysbuf);
 #endif
 }
-
 
 
 #if defined(CONFIG_OF)
@@ -589,11 +491,10 @@ static const struct of_device_id gtsport_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, gtsport_ids);
 
+
 static int gtsport_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *match =
-		of_match_device(of_match_ptr(gtsport_ids), &pdev->dev);
 	struct resource *mem, *ioarea, *res;
 	struct gtsport_dev *dev;
 	struct pinctrl *pinctrl;
@@ -609,6 +510,7 @@ static int gtsport_probe(struct platform_device *pdev)
 	if (!dev)
 		return	-ENOMEM;
 
+	platform_set_drvdata(pdev, dev);
 
 	ret = of_property_read_u32(np, "asp-chan-q", &dev->asp_chan_q);
 	if (ret < 0) {
@@ -629,9 +531,6 @@ static int gtsport_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		return -EINVAL;
 	}
-
-	printk("rx_dma_offset: %08x\n", dev->rx_dma_offset);
-
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
@@ -661,8 +560,7 @@ static int gtsport_probe(struct platform_device *pdev)
 	}
 
 	dev->fifo_base = DAVINCI_MCASP_V3_AFIFO_BASE;
-	dev->base = devm_ioremap(
-				 &pdev->dev, mem->start, resource_size(mem));
+	dev->base = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
 	if (!dev->base) {
 		dev_err(&pdev->dev, "ioremap failed\n");
 		ret = -ENOMEM;
@@ -676,9 +574,6 @@ static int gtsport_probe(struct platform_device *pdev)
 		goto err_release_clk;
 	}
 
-
-
-
 	res = platform_get_resource_byname(pdev, IORESOURCE_DMA, "rx");
 	if (!res) {
 		dev_err(&pdev->dev, "Failed to get rx dma resource\n");
@@ -687,24 +582,23 @@ static int gtsport_probe(struct platform_device *pdev)
 	}
 	dev->rx_dma_channel = res->start;
 
-	printk("%s(): rx_dma_channel %d\n", __func__, dev->rx_dma_channel);
-
-
-	start_test_tx(dev, pdev);
-
-	printk("%s\n", __func__);
+	start_test_tx(pdev);
 	return 0;
 
  err_release_clk:
 	pm_runtime_put_sync(&pdev->dev);
- err:
 	pm_runtime_disable(&pdev->dev);
 	return ret;
 }
 
 static int gtsport_remove(struct platform_device *pdev)
 {
+	struct gtsport_dev *dev = platform_get_drvdata(pdev);
+
 	printk("%s\n", __func__);
+
+	mcasp_stop_rx(dev);
+
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 	return 0;
