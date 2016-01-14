@@ -43,7 +43,6 @@
 
 struct gtsport_dev {
 	void __iomem *base;
-	void __iomem *fifo;
 	u32 fifo_base;
 
 	void *dma_buf;
@@ -121,16 +120,6 @@ static bool mcasp_is_synchronous(struct gtsport_dev *mcasp)
 
 static void mcasp_start_rx(struct gtsport_dev *mcasp)
 {
-	printk("%s()\n", __func__);
-#if 0
-	if (1) {	/* enable FIFO */
-		u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
-
-		//mcasp_set_reg(mcasp, reg, 0);
-		//mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
-		//mcasp_set_bits(mcasp, reg, FIFO_ENABLE);
-	}
-#endif
 	/* Start clocks */
 	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXHCLKRST);
 	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXCLKRST);
@@ -153,15 +142,12 @@ static void mcasp_start_rx(struct gtsport_dev *mcasp)
 	if (mcasp_is_synchronous(mcasp))
 		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXFSRST);
 
-	/* enable receive IRQs */
-	//mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, RECIEVE_IRQ_MASK);
+	/* Disable IRQs */
 	mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
 }
 
 static void mcasp_stop_rx(struct gtsport_dev *mcasp)
 {
-	printk("%s()\n", __func__);
-
 	/* disable IRQ sources */
 	mcasp_clr_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
 
@@ -174,13 +160,6 @@ static void mcasp_stop_rx(struct gtsport_dev *mcasp)
 
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, 0);
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
-
-#if 0
-	if (1) {	/* disable FIFO */
-		u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
-		mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
-	}
-#endif
 }
 
 void mcasp_set_hw_params(struct gtsport_dev *mcasp)
@@ -206,11 +185,9 @@ void mcasp_set_hw_params(struct gtsport_dev *mcasp)
 
 	mcasp_clr_bits(mcasp, reg, FIFO_ENABLE);
 
-#define X_NUMEVT 1
-
 #if 1
 	mcasp_mod_bits(mcasp, reg, 1, NUMDMA_MASK);
-	mcasp_mod_bits(mcasp, reg, NUMEVT(X_NUMEVT), NUMEVT_MASK);
+	mcasp_mod_bits(mcasp, reg, NUMEVT(1), NUMEVT_MASK);
 	mcasp_set_bits(mcasp, reg, FIFO_ENABLE);
 #endif
 
@@ -243,21 +220,6 @@ void mcasp_set_hw_params(struct gtsport_dev *mcasp)
 				       SRMOD_INACTIVE, SRMOD_MASK);
 		}
 	}
-
-#if 0
-	{
-		int active_serializers = rx_ser;
-		int numevt = 1;
-		u32 reg = mcasp->fifo_base + MCASP_RFIFOCTL_OFFSET;
-
-		mcasp_mod_bits(mcasp, reg,
-			       active_serializers,
-			       NUMDMA_MASK);
-		mcasp_mod_bits(mcasp, reg,
-			       NUMEVT(numevt),
-			       NUMEVT_MASK);
-	}
-#endif
 }
 
 
@@ -288,12 +250,6 @@ void mcasp_set_dai_fmt(struct gtsport_dev *mcasp)
 	mcasp_clr_bits(mcasp, DAVINCI_MCASP_PDIR_REG,
 		       ACLKX | AHCLKX | AFSX | ACLKR | AHCLKR | AFSR);
 
-#if 0
-	//???
-	mcasp_set_bits(mcasp, DAVINCI_MCASP_AHCLKXCTL_REG, AHCLKXE);
-	mcasp_set_bits(mcasp, DAVINCI_MCASP_AHCLKRCTL_REG, AHCLKRE);
-	mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AHCLKX);
-#endif
 
 	mcasp_set_bits(mcasp, DAVINCI_MCASP_PDIR_REG, AHCLKX);
 
@@ -322,13 +278,6 @@ void mcasp_i2s_hw_param(struct gtsport_dev *mcasp)
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXFMCTL_REG, 0x00000100);
 	// channel 1
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, 3);
-
-#if 0
-	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, mask);
-	mcasp_set_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, busel | RXORD);
-	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG,
-		       FSRMOD(total_slots), FSRMOD(0x1FF));
-#endif
 }
 
 static
@@ -336,32 +285,35 @@ void set_channel_size(struct gtsport_dev *mcasp)
 {
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXMASK_REG, 0xffffffff);
 	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXFMT_REG, 0x000080f0);
-
-#if 0
-	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, RXSSZ(fmt),
-		       RXSSZ(0x0F));
-	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, RXROT(rx_rotate),
-		       RXROT(7));
-	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXMASK_REG, mask);
-#endif
 }
 
 
-static void print_buf_info(int slot, char *name)
+static
+int gtsport_mcasp_port_setup(struct gtsport_dev *dev)
 {
-	struct edmacc_param p;
-	if (slot < 0)
-		return;
-	edma_read_slot(slot, &p);
-	printk("%s: 0x%x, opt=%x, src=%x, a_b_cnt=%x dst=%x\n",
-			name, slot, p.opt, p.src, p.a_b_cnt, p.dst);
-	printk("    src_dst_bidx=%x link_bcntrld=%x src_dst_cidx=%x ccnt=%x\n",
-			p.src_dst_bidx, p.link_bcntrld, p.src_dst_cidx, p.ccnt);
+	/* TODO: clean me up */
+	mcasp_set_hw_params(dev);
+	mcasp_i2s_hw_param(dev);
+	set_channel_size(dev);
+	mcasp_set_dai_fmt(dev);
+
+	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKRCTL_REG,0);
+	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKXCTL_REG, 0);
+	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKRCTL_REG, 0x00008001);
+	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKXCTL_REG, 0x00008001);
+	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLR_REG, 0x0000021f);
+	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLX_REG, 0x0000021f);
+
+	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMCTL_REG, 0x00000100);
+	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMT_REG, 0x000080f0);
+
+	mcasp_set_reg(dev, DAVINCI_MCASP_XRSRCTL_REG(0), 0x22);
+	return 0;
 }
 
 
-static void davinci_pcm_enqueue_dma(int asp_link, dma_addr_t fifo_dma_addr,
-				    dma_addr_t dst_dma_addr, unsigned int len)
+static void mcasp_dma_enqueue(int asp_link, dma_addr_t fifo_dma_addr,
+			      dma_addr_t dst_dma_addr, unsigned int len)
 {
 	unsigned int word_size = 4;
 	unsigned int fifo_level = 1;
@@ -379,7 +331,23 @@ static void davinci_pcm_enqueue_dma(int asp_link, dma_addr_t fifo_dma_addr,
 }
 
 
-static void dma_callback(unsigned link, u16 ch_status, void *data)
+
+static inline
+void print_buf_info(int slot, char *name)
+{
+	struct edmacc_param p;
+	if (slot < 0)
+		return;
+	edma_read_slot(slot, &p);
+	printk("%s: 0x%x, opt=%x, src=%x, a_b_cnt=%x dst=%x\n",
+			name, slot, p.opt, p.src, p.a_b_cnt, p.dst);
+	printk("    src_dst_bidx=%x link_bcntrld=%x src_dst_cidx=%x ccnt=%x\n",
+			p.src_dst_bidx, p.link_bcntrld, p.src_dst_cidx, p.ccnt);
+}
+
+
+static
+void mcasp_dma_callback(unsigned link, u16 ch_status, void *data)
 {
 	struct gtsport_dev *dev = (struct gtsport_dev *) data;
 	u32 *dma_buf = (u32 *) dev->dma_buf;
@@ -407,85 +375,65 @@ static void dma_callback(unsigned link, u16 ch_status, void *data)
 }
 
 
+static
+int gtsport_mcasp_dma_setup(struct gtsport_dev *dev)
+{
+	struct edmacc_param param_set;
+	int i, ret;
+
+	dev->dma_buf = (unsigned char *)
+		dma_alloc_coherent(NULL, BUF_SIZE, &dev->dmaphysbuf, 0);
+
+	if (dev->dma_buf == NULL)
+		return -ENOMEM;
+
+	printk("got buffer: %08lx\n", (unsigned long) dev->dma_buf);
+
+	ret = edma_alloc_channel(dev->rx_dma_channel,
+					 mcasp_dma_callback, dev,
+					 //dev->asp_chan_q
+					 EVENTQ_0);
+	if (ret < 0) {
+		printk("edma_alloc_channel() failed\n");
+		return ret;
+	}
+
+	for (i = 0; i < 2; i++) {
+		ret = dev->asp_link[i] = edma_alloc_slot(
+			EDMA_CTLR(dev->rx_dma_channel), EDMA_SLOT_ANY);
+		if (ret < 0)
+			return ret;
+
+		mcasp_dma_enqueue(dev->asp_link[i],
+				  dev->rx_dma_offset,
+				  dev->dmaphysbuf + CHUNK * i,
+				  CHUNK);
+
+		edma_read_slot(dev->asp_link[i], &param_set);
+		param_set.opt |= TCINTEN;
+		param_set.opt |= EDMA_TCC(EDMA_CHAN_SLOT(dev->rx_dma_channel));
+		edma_write_slot(dev->asp_link[i], &param_set);
+	}
+
+	/* cycle */
+	edma_link(dev->asp_link[0], dev->asp_link[1]);
+	edma_link(dev->asp_link[1], dev->asp_link[0]);
+
+	/* initialize slot */
+	edma_read_slot(dev->asp_link[0], &param_set);
+	edma_write_slot(dev->rx_dma_channel, &param_set);
+
+	edma_start(dev->rx_dma_channel);
+	return 0;
+}
 
 static
 void start_test_tx(struct platform_device *pdev)
 {
 	struct gtsport_dev *dev = platform_get_drvdata(pdev);
-	int i;
 
-	/* setup dma */
-	{
-		struct edmacc_param param_set;
-		int asp_channel;
-
-
-		dev->dma_buf = (unsigned char *)
-			dma_alloc_coherent(NULL, BUF_SIZE, &dev->dmaphysbuf, 0);
-
-		printk("got buffer: %08lx\n", (unsigned long) dev->dma_buf);
-
-		asp_channel = edma_alloc_channel(dev->rx_dma_channel,
-						 dma_callback, dev,
-						 //dev->asp_chan_q
-						 EVENTQ_0
-						 );
-		if (asp_channel < 0) {
-			printk("edma_alloc_channel() failed\n");
-			return;
-		}
-
-		printk("asp_channel = %d, rx_dma_channel = %d, chan_q = %d\n",
-		       asp_channel, dev->rx_dma_channel, dev->asp_chan_q);
-
-		for (i = 0; i < 2; i++) {
-			dev->asp_link[i] = edma_alloc_slot(
-				EDMA_CTLR(dev->rx_dma_channel), EDMA_SLOT_ANY);
-
-			davinci_pcm_enqueue_dma(dev->asp_link[i],
-						dev->rx_dma_offset,
-						dev->dmaphysbuf + CHUNK * i,
-						CHUNK);
-
-			edma_read_slot(dev->asp_link[i], &param_set);
-			//param_set.opt |= ITCINTEN;
-			param_set.opt |= TCINTEN;
-			param_set.opt |= EDMA_TCC(EDMA_CHAN_SLOT(dev->rx_dma_channel));
-			edma_write_slot(dev->asp_link[i], &param_set);
-		}
-
-		edma_link(dev->asp_link[0], dev->asp_link[1]);
-		edma_link(dev->asp_link[1], dev->asp_link[0]);
-
-		/* initialize slot */
-		edma_read_slot(dev->asp_link[0], &param_set);
-		edma_write_slot(asp_channel, &param_set);
-
-		print_buf_info(dev->rx_dma_channel, "rx-buf");
-
-
-		edma_start(dev->rx_dma_channel);
-	}
-
-
-	mcasp_set_hw_params(dev);
-	mcasp_i2s_hw_param(dev);
-	set_channel_size(dev);
-	mcasp_set_dai_fmt(dev);
-
-#if 1
-	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKRCTL_REG,0);
-	mcasp_set_reg(dev, DAVINCI_MCASP_ACLKXCTL_REG, 0);
-	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKRCTL_REG, 0x00008001);
-	mcasp_set_reg(dev, DAVINCI_MCASP_AHCLKXCTL_REG, 0x00008001);
-	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLR_REG, 0x0000021f);
-	mcasp_set_reg(dev, DAVINCI_MCASP_GBLCTLX_REG, 0x0000021f);
-
-	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMCTL_REG, 0x00000100);
-	//mcasp_set_reg(dev, DAVINCI_MCASP_RXFMT_REG, 0x000080f0);
-
-	mcasp_set_reg(dev, DAVINCI_MCASP_XRSRCTL_REG(0), 0x22);
-#endif
+	gtsport_mcasp_dma_setup(dev);
+	gtsport_mcasp_port_setup(dev);
 
 	mcasp_start_rx(dev);
 }
@@ -563,13 +511,6 @@ static int gtsport_probe(struct platform_device *pdev)
 	dev->fifo_base = DAVINCI_MCASP_V3_AFIFO_BASE;
 	dev->base = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
 	if (!dev->base) {
-		dev_err(&pdev->dev, "ioremap failed\n");
-		ret = -ENOMEM;
-		goto err_release_clk;
-	}
-
-	dev->fifo = devm_ioremap(&pdev->dev, dev->rx_dma_offset, 0x2000);
-	if (!dev->fifo) {
 		dev_err(&pdev->dev, "ioremap failed\n");
 		ret = -ENOMEM;
 		goto err_release_clk;
