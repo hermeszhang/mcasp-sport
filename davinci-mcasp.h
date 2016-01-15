@@ -18,6 +18,9 @@
 #ifndef DAVINCI_MCASP_H
 #define DAVINCI_MCASP_H
 
+#include <linux/io.h>
+#include <linux/kernel.h>
+
 /*
  * McASP register definitions
  */
@@ -313,4 +316,111 @@
 #define NUMEVT(x)	(((x) & 0xFF) << 8)
 #define NUMDMA_MASK	(0xFF)
 
-#endif	/* DAVINCI_MCASP_H */
+
+struct mcasp {
+	void __iomem *base;
+	u32 fifo_base;
+} ;
+
+static inline void mcasp_set_bits(struct mcasp *mcasp, u32 offset,
+				  u32 val)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel(__raw_readl(reg) | val, reg);
+}
+
+static inline void mcasp_clr_bits(struct mcasp *mcasp, u32 offset,
+				  u32 val)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel((__raw_readl(reg) & ~(val)), reg);
+}
+
+static inline void mcasp_mod_bits(struct mcasp *mcasp, u32 offset,
+				  u32 val, u32 mask)
+{
+	void __iomem *reg = mcasp->base + offset;
+	__raw_writel((__raw_readl(reg) & ~mask) | val, reg);
+}
+
+static inline void mcasp_set_reg(struct mcasp *mcasp, u32 offset,
+				 u32 val)
+{
+	__raw_writel(val, mcasp->base + offset);
+}
+
+static inline u32 mcasp_get_reg(struct mcasp *mcasp, u32 offset)
+{
+	return (u32)__raw_readl(mcasp->base + offset);
+}
+
+static inline void mcasp_set_ctl_reg(struct mcasp *mcasp, u32 ctl_reg, u32 val)
+{
+	int i = 0;
+
+	mcasp_set_bits(mcasp, ctl_reg, val);
+
+	/* programming GBLCTL needs to read back from GBLCTL and verfiy */
+	/* loop count is to avoid the lock-up */
+	for (i = 0; i < 1000; i++) {
+		if ((mcasp_get_reg(mcasp, ctl_reg) & val) == val)
+			break;
+	}
+
+	if (i == 1000 && ((mcasp_get_reg(mcasp, ctl_reg) & val) != val))
+		printk(KERN_ERR "GBLCTL write error\n");
+}
+
+static inline bool mcasp_is_synchronous(struct mcasp *mcasp)
+{
+	u32 rxfmctl = mcasp_get_reg(mcasp, DAVINCI_MCASP_RXFMCTL_REG);
+	u32 aclkxctl = mcasp_get_reg(mcasp, DAVINCI_MCASP_ACLKXCTL_REG);
+
+	return !(aclkxctl & TX_ASYNC) && rxfmctl & AFSRE;
+}
+
+static void mcasp_start_rx(struct mcasp *mcasp)
+{
+	/* Start clocks */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXHCLKRST);
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXCLKRST);
+	/*
+	 * When ASYNC == 0 the transmit and receive sections operate
+	 * synchronously from the transmit clock and frame sync. We need to make
+	 * sure that the TX signlas are enabled when starting reception.
+	 */
+	if (mcasp_is_synchronous(mcasp)) {
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXHCLKRST);
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXCLKRST);
+	}
+
+	/* Activate serializer(s) */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXSERCLR);
+	/* Release RX state machine */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXSMRST);
+	/* Release Frame Sync generator */
+	mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, RXFSRST);
+	if (mcasp_is_synchronous(mcasp))
+		mcasp_set_ctl_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, TXFSRST);
+
+	/* Disable IRQs */
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
+}
+
+static void mcasp_stop_rx(struct mcasp *mcasp)
+{
+	/* disable IRQ sources */
+	mcasp_clr_bits(mcasp, DAVINCI_MCASP_EVTCTLR_REG, 0);
+
+	/*
+	 * In synchronous mode stop the TX clocks if no other stream is
+	 * running
+	 */
+	if (mcasp_is_synchronous(mcasp))
+		mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLX_REG, 0);
+
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_GBLCTLR_REG, 0);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXSTAT_REG, 0xFFFFFFFF);
+}
+
+#endif /* DAVINCI_MCASP_H */
