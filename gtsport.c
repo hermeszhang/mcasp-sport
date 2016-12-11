@@ -39,10 +39,27 @@
 
 #include "davinci-mcasp.h"
 
+#if 1
+static inline const char *_basename(const char *path) {
+	const char *result = path;
+	while (*path) {
+		if (*path++ == '/')
+			result = path;
+	}
+	return result;
+}
+
+#define DEBUG(fmt, args...)						\
+	printk(/*KERN_DEBUG*/ "%s:%d:%s(): " fmt "\n",			\
+	       _basename(__FILE__), __LINE__, __func__, ## args);
+#else
+#define DEBUG(fmt, ...) do {} while (0)
+#endif
+
 
 #define DEVICE_NAME "gtsport"
 
-#define BUF_SIZE (1024 * 64)
+#define BUF_SIZE (1024 * 1024)
 #define CHUNK (BUF_SIZE / 2)
 
 static int gtsport_major = 0;
@@ -274,6 +291,7 @@ void mcasp_dma_callback(unsigned link, u16 ch_status, void *data)
 			dev->__bad++;
 			bad_counter++;
 		}
+		//printk("%08x\n", dma_buf[i]);
 		dev->__counter = dma_buf[i] + 1;
 		dev->__total++;
 	}
@@ -342,11 +360,22 @@ static ssize_t show_buffer_overflow(struct device *dev,
         return sprintf(buf, "%08x\n", sport->__bad);
 }
 
+static ssize_t show_rx_total(struct device *dev,
+			     struct device_attribute *attr,
+			     char *buf)
+{
+	struct gtsport_dev *sport = dev_get_drvdata(dev->parent);
+        return sprintf(buf, "%d\n", sport->__total);
+}
+
 static DEVICE_ATTR(buffer_overflow, S_IRUGO,
                    show_buffer_overflow, NULL);
+static DEVICE_ATTR(rx_total, S_IRUGO,
+                   show_rx_total, NULL);
 
 static struct attribute *gtsport_sysfs_entries[] = {
         &dev_attr_buffer_overflow.attr,
+        &dev_attr_rx_total.attr,
         NULL,
 } ;
 
@@ -362,6 +391,8 @@ static int gtsport_probe(struct platform_device *pdev)
 	struct gtsport_dev *dev;
 	struct pinctrl *pinctrl;
 	int ret;
+
+	DEBUG("probe begin");
 
 	if (!pdev->dev.platform_data && !pdev->dev.of_node) {
 		dev_err(&pdev->dev, "No platform data supplied\n");
@@ -460,7 +491,7 @@ static int gtsport_remove(struct platform_device *pdev)
 {
 	struct gtsport_dev *dev = platform_get_drvdata(pdev);
 
-	printk("%s\n", __func__);
+	DEBUG("removing driver");
 
         sysfs_remove_group(&dev->chardev->kobj, &gtsport_attribute_group);
 	device_destroy(gtsport_char_class, dev->chardev->devt);
@@ -498,25 +529,33 @@ static struct platform_driver gtsport_driver = {
 static int gtsport_char_open(struct inode *inode, struct file *filp)
 {
 	struct gtsport_dev *dev = _gtsport_instance;
+	int ret;
 
-	printk(KERN_DEBUG "%s\n", __func__);
+	DEBUG("");
 
 	spin_lock(&dev->dev_lock);
 	if (dev->users) {
-		spin_unlock(&dev->dev_lock);
-		return -EBUSY;
+		ret = -EBUSY;
+		goto error;
 	}
-	dev->users++;
 
-	filp->private_data = dev;
+	ret = gtsport_mcasp_dma_setup(dev);
+	if (ret < 0)
+		goto error;
 
-	gtsport_mcasp_dma_setup(dev);
-	gtsport_mcasp_port_setup(dev);
+	ret = gtsport_mcasp_port_setup(dev);
+	if (ret < 0)
+		goto error;
+
 	mcasp_start_rx(&dev->mcasp);
 
+	dev->users++;
+	filp->private_data = dev;
 	spin_unlock(&dev->dev_lock);
-
 	return 0;
+ error:
+	spin_unlock(&dev->dev_lock);
+	return ret;
 }
 
 
@@ -525,7 +564,7 @@ static int gtsport_char_release(struct inode *inode, struct file *filp)
 	struct gtsport_dev *dev = filp->private_data;
 	int i;
 
-	printk(KERN_DEBUG "%s\n", __func__);
+	DEBUG("");
 
 	spin_lock(&dev->dev_lock);
 	dev->users--;
@@ -595,11 +634,15 @@ static int __init gtsport_init(void)
 		return gtsport_major;
 	}
 
+	DEBUG("gtsport chardev registered");
+
 	gtsport_char_class = class_create(THIS_MODULE, DEVICE_NAME);
 	if (IS_ERR(gtsport_char_class)) {
 		unregister_chrdev(gtsport_major, DEVICE_NAME);
 		return PTR_ERR(gtsport_char_class);
 	}
+
+	DEBUG("gtsport device class registered");
 
 #if defined(CONFIG_OF)
 	/*
@@ -611,6 +654,8 @@ static int __init gtsport_init(void)
 		if (ret < 0)
 			return ret;
 	}
+
+	DEBUG("gtsport platform driver registered");
 #endif
 
 	return 0;
