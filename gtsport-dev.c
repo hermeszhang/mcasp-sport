@@ -86,19 +86,6 @@ struct gtsport_dev {
 
 static struct gtsport_dev *_gtsport_instance = NULL;
 
-static void print_buf_info(int slot, char *name)
-{
-	struct edmacc_param p;
-	if (slot < 0)
-		return;
-	edma_read_slot(slot, &p);
-	printk("%s: 0x%x, opt=%x, src=%x, a_b_cnt=%x dst=%x\n",
-			name, slot, p.opt, p.src, p.a_b_cnt, p.dst);
-	printk("    src_dst_bidx=%x link_bcntrld=%x src_dst_cidx=%x ccnt=%x\n",
-			p.src_dst_bidx, p.link_bcntrld, p.src_dst_cidx, p.ccnt);
-}
-
-
 static void davinci_pcm_enqueue_dma(int asp_link, dma_addr_t fifo_dma_addr,
 				    dma_addr_t dst_dma_addr, unsigned int len)
 {
@@ -147,17 +134,18 @@ static void gtsport_dma_callback(unsigned link, u16 ch_status, void *data)
 		dev->rx_total++;
 	}
 #endif
-	dev->next_rx_chunk = (dev->next_rx_chunk + 1) % CHUNKS_COUNT;
-
 	spin_lock_irqsave(&dev->rx_lock, flags);
 	/* update buffer head */
+	dev->next_rx_chunk = (dev->next_rx_chunk + 1) % CHUNKS_COUNT;
 	dev->rx_buf.count += CHUNK_SIZE;
 	dev->rx_buf.head = CHUNK_SIZE * dev->next_rx_chunk;
 
 	if (dev->rx_buf.count >= BUF_SIZE) {
-		dev->rx_buf.tail = dev->rx_buf.head;
-		dev->rx_buf.count = BUF_SIZE;
-		dev->rx_buf.overflow++;
+                /* chunk is lost */
+		dev->rx_buf.count = BUF_SIZE - CHUNK_SIZE;
+                dev->rx_buf.tail = (BUF_SIZE + dev->rx_buf.head -
+                                    dev->rx_buf.count) % BUF_SIZE;
+		dev->rx_buf.overflow += CHUNK_SIZE;
 	}
 	spin_unlock_irqrestore(&dev->rx_lock, flags);
 
@@ -236,15 +224,37 @@ static int gtsport_mcasp_rx_dma_setup(struct gtsport_dev *dev)
 	edma_read_slot(dev->asp_link[0], &param_set);
 	edma_write_slot(asp_channel, &param_set);
 
-	print_buf_info(dev->rx_dma_channel, "rx-buf");
-
-
 	/* reset DMA buffer */
 	dev->next_rx_chunk = 0;
 	memset(&dev->rx_buf, 0, sizeof(dev->rx_buf));
 
 	edma_start(dev->rx_dma_channel);
 	return 0;
+}
+
+static ssize_t show_rx_buf(struct device *dev,
+			   struct device_attribute *attr,
+			   char *buf)
+{
+	struct gtsport_dev *sport = dev_get_drvdata(dev->parent);
+	return sprintf(buf, "head=%08lx tail=%08lx count=%08lx over=%08lx\n",
+		       sport->rx_buf.head, sport->rx_buf.tail,
+		       sport->rx_buf.count, sport->rx_buf.overflow);
+}
+
+static ssize_t show_rx_dma_buf(struct device *dev,
+                               struct device_attribute *attr,
+                               char *buf)
+{
+	struct gtsport_dev *sport = dev_get_drvdata(dev->parent);
+	struct edmacc_param p;
+	int slot = sport->rx_dma_channel;
+	edma_read_slot(slot, &p);
+	return sprintf(
+		buf, "0x%x, opt=%x, src=%x, a_b_cnt=%x dst=%x\n"
+		"src_dst_bidx=%x link_bcntrld=%x src_dst_cidx=%x ccnt=%x\n",
+		slot, p.opt, p.src, p.a_b_cnt, p.dst,
+		p.src_dst_bidx, p.link_bcntrld, p.src_dst_cidx, p.ccnt);
 }
 
 static ssize_t show_rx_overflow(struct device *dev,
@@ -263,10 +273,14 @@ static ssize_t show_rx_total(struct device *dev,
 	return sprintf(buf, "%lu\n", sport->rx_total);
 }
 
+static DEVICE_ATTR(rx_buf, S_IRUGO, show_rx_buf, NULL);
+static DEVICE_ATTR(rx_dma_buf, S_IRUGO, show_rx_dma_buf, NULL);
 static DEVICE_ATTR(rx_overflow, S_IRUGO, show_rx_overflow, NULL);
 static DEVICE_ATTR(rx_total, S_IRUGO, show_rx_total, NULL);
 
 static struct attribute *gtsport_sysfs_entries[] = {
+	&dev_attr_rx_buf.attr,
+	&dev_attr_rx_dma_buf.attr,
 	&dev_attr_rx_overflow.attr,
 	&dev_attr_rx_total.attr,
 	NULL,
