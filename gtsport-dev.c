@@ -503,11 +503,8 @@ static ssize_t gtsport_char_read(struct file *filp, char *buf,
 
 	while ((amount = min(min(rx_buf.count, BUF_SIZE - rx_buf.tail),
 			     (unsigned long) count)) > 0) {
-		int err = copy_to_user(buf, dev->dma_buf + rx_buf.tail, amount);
-
-		if (err < 0) {
-			retval = -EFAULT;
-			break;
+		if (copy_to_user(buf, dev->dma_buf + rx_buf.tail, amount)) {
+			return -EFAULT;
 		}
 
 		rx_buf.tail = (rx_buf.tail + amount) % BUF_SIZE;
