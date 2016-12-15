@@ -120,6 +120,7 @@ static void davinci_pcm_enqueue_dma(int asp_link, dma_addr_t fifo_dma_addr,
 static void gtsport_dma_callback(unsigned link, u16 ch_status, void *data)
 {
 	struct gtsport_dev *dev = (struct gtsport_dev *) data;
+	unsigned long flags;
 #ifdef TEST_COUNTER
 	u32 *dma_buf = (u32 *) dev->dma_buf;
 	int i;
@@ -148,7 +149,7 @@ static void gtsport_dma_callback(unsigned link, u16 ch_status, void *data)
 #endif
 	dev->next_rx_chunk = (dev->next_rx_chunk + 1) % CHUNKS_COUNT;
 
-	spin_lock(&dev->rx_lock);
+	spin_lock_irqsave(&dev->rx_lock, flags);
 	/* update buffer head */
 	dev->rx_buf.count += CHUNK_SIZE;
 	dev->rx_buf.head = CHUNK_SIZE * dev->next_rx_chunk;
@@ -158,7 +159,7 @@ static void gtsport_dma_callback(unsigned link, u16 ch_status, void *data)
 		dev->rx_buf.count = BUF_SIZE;
 		dev->rx_buf.overflow++;
 	}
-	spin_unlock(&dev->rx_lock);
+	spin_unlock_irqrestore(&dev->rx_lock, flags);
 
 	wake_up(&dev->poll_wq);
 }
@@ -479,11 +480,12 @@ static ssize_t gtsport_char_read(struct file *filp, char *buf,
 	ssize_t retval;
 	struct circular_buffer rx_buf;
 	size_t amount;
+	unsigned long flags;
 
 	// TODO: check DMA status between chunks
-	spin_lock(&dev->rx_lock);
+	spin_lock_irqsave(&dev->rx_lock, flags);
 	while (!gtsport_buffer_not_empty(dev)) {
-		spin_unlock(&dev->rx_lock);
+		spin_unlock_irqrestore(&dev->rx_lock, flags);
 		if (filp->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 		retval = wait_event_interruptible(
@@ -491,16 +493,16 @@ static ssize_t gtsport_char_read(struct file *filp, char *buf,
 		    gtsport_buffer_not_empty(dev));
 		if (retval)
 			return retval;
-		spin_lock(&dev->rx_lock);
+		spin_lock_irqsave(&dev->rx_lock, flags);
         }
 
 	rx_buf = dev->rx_buf;
-	spin_unlock(&dev->rx_lock);
+	spin_unlock_irqrestore(&dev->rx_lock, flags);
 
 	retval = 0;
 
 	while ((amount = min(min(rx_buf.count, BUF_SIZE - rx_buf.tail),
-			     count)) > 0) {
+			     (unsigned long) count)) > 0) {
 		int err = copy_to_user(buf, dev->dma_buf + rx_buf.tail, amount);
 
 		if (err < 0) {
@@ -517,14 +519,14 @@ static ssize_t gtsport_char_read(struct file *filp, char *buf,
 	}
 
 	/* move tail */
-	spin_lock(&dev->rx_lock);
+	spin_lock_irqsave(&dev->rx_lock, flags);
 	if (dev->rx_buf.count >= retval)
 		dev->rx_buf.count -= retval;
 	else
 		dev->rx_buf.count = 0;
         dev->rx_buf.tail = (BUF_SIZE + dev->rx_buf.head -
 			    dev->rx_buf.count) % BUF_SIZE;
-	spin_unlock(&dev->rx_lock);
+	spin_unlock_irqrestore(&dev->rx_lock, flags);
 
 	return retval;
 }
