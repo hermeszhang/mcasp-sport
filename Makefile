@@ -11,5 +11,8 @@ KDIR  := $(PWD)/../beagle-linux
 module:
 	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
 
+clean:
+	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) clean
+
 upload: module
 	scp gtsport.ko root@192.168.7.2:
