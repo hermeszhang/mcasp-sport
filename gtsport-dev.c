@@ -184,7 +184,7 @@ static int gtsport_mcasp_rx_dma_setup(struct gtsport_dev *dev)
 		return -ENOMEM;
 	}
 
-	DEBUG("got DMA buffer: %08lx\n", (unsigned long) dev->dma_buf);
+	DEBUG("got DMA buffer: %08lx", (unsigned long) dev->dma_buf);
 
 	asp_channel = edma_alloc_channel(dev->rx_dma_channel,
 					 gtsport_dma_callback, dev,
@@ -196,7 +196,7 @@ static int gtsport_mcasp_rx_dma_setup(struct gtsport_dev *dev)
 		return asp_channel;
 	}
 
-	DEBUG("asp_channel = %d, rx_dma_channel = %d, chan_q = %d\n",
+	DEBUG("asp_channel = %d, rx_dma_channel = %d, chan_q = %d",
 	      asp_channel, dev->rx_dma_channel, dev->asp_chan_q);
 
 	for (i = 0; i < CHUNKS_COUNT; i++) {

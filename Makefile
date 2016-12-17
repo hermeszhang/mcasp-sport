@@ -5,7 +5,7 @@ obj-m := gtsport.o
 gtsport-objs += gtsport-dev.o mcasp-setup.o
 
 PWD   := $(shell pwd)
-KDIR  := $(PWD)/../beagle-linux
+KDIR  := $(PWD)/../beagle-linux-3.8.13
 
 .PHONY: module
 module:
