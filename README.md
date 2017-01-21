@@ -16,6 +16,8 @@ insmod gtsport.ko
 ```
 When inserted data could be accessed via `/dev/gtsport` character device. Currently only `read(2)` and polling is supported.
 
+Increase coherent pool size set coherent_pool=8M in /boot/uEnv.txt
+
 ### TODO ###
 
 * Read DMA descriptor to move buffer's head
